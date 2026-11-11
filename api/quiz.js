@@ -35,6 +35,7 @@ async function rpc(fn, args) {
     const code = json && typeof json.message === 'string' && STATUS[json.message] ? json.message : null;
     const err = new Error(code || 'upstream_error');
     err.code = code; err.detail = r.status + ' ' + text.slice(0, 300);
+    err.upstreamStatus = r.status; err.upstreamCode = json && typeof json.code === 'string' ? json.code : null;
     throw err;
   }
   return json;
@@ -89,6 +90,8 @@ module.exports = async function handler(req, res) {
   } catch (e) {
     if (e.code) return res.status(STATUS[e.code]).json({ error: e.code });
     console.error('quiz api error:', e.message, e.detail || '');
-    return res.status(502).json({ error: 'server_error' });
+    // Only a status number and an error code (for example PGRST202 or ENOTFOUND), never a message, key or URL:
+    // enough to tell a missing function from a wrong URL or key without opening the Vercel logs.
+    return res.status(502).json({ error: 'server_error', upstream_status: e.upstreamStatus || null, upstream_code: e.upstreamCode || (e.cause && e.cause.code) || e.name || null });
   }
 };
