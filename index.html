@@ -53,8 +53,9 @@ button{font:inherit;color:inherit}
 #boot .bars i::after{content:"";position:absolute;inset:0;background:var(--c);transform:scaleX(var(--p,0));transform-origin:left}
 
 /* ---------- nav ---------- */
-.nav{position:fixed;top:0;left:0;right:0;z-index:60;padding-top:env(safe-area-inset-top,0px);transition:background .3s,backdrop-filter .3s}
-.nav.solid{background:rgba(5,10,28,.78);backdrop-filter:blur(12px);border-bottom:1px solid var(--line)}
+.nav{position:fixed;top:0;left:0;right:0;z-index:60;padding-top:env(safe-area-inset-top,0px);border-bottom:1px solid transparent;transition:transform .45s cubic-bezier(.16,1,.3,1),background .3s,backdrop-filter .3s,border-color .3s}
+.nav.solid{background:rgba(5,10,28,.82);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);border-bottom-color:var(--line)}
+.nav.hide{transform:translateY(-110%)}
 .nav .bar{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:14px var(--gutr) 14px var(--gut);max-width:1280px;margin:0 auto}
 .brand{display:flex;align-items:center;gap:12px;font-family:var(--display);font-weight:800;font-size:13px;letter-spacing:.12em}
 .mark{display:grid;gap:3px}.mark i{display:block;width:22px;height:5px;border-radius:2px}
@@ -248,11 +249,11 @@ footer b{color:var(--ink);font-weight:600}
 @media(max-width:820px){.cta-grid{grid-template-columns:1fr}}
 
 /* ---------- console shell (quiz + board) ---------- */
-.shell{min-height:100vh;position:relative;padding:calc(110px + env(safe-area-inset-top,0px)) 0 90px;overflow:hidden}
+.shell{min-height:100vh;position:relative;padding:calc(110px + env(safe-area-inset-top,0px)) 0 90px;overflow:hidden;overflow:clip}
 .shell::before{content:"";position:absolute;left:-40%;right:-40%;bottom:-10%;height:50%;transform:perspective(420px) rotateX(64deg);transform-origin:50% 100%;
   background-image:linear-gradient(rgba(123,108,255,.3) 1px,transparent 1px),linear-gradient(90deg,rgba(123,108,255,.3) 1px,transparent 1px);background-size:64px 64px;-webkit-mask-image:linear-gradient(to top,#000,transparent 80%);mask-image:linear-gradient(to top,#000,transparent 80%)}
 .shell>.wrap{position:relative;max-width:920px}
-.panel{position:relative;border:1px solid var(--line);border-radius:22px;background:linear-gradient(180deg,rgba(17,28,76,.72),rgba(7,12,36,.86));backdrop-filter:blur(10px);padding:clamp(22px,4vw,44px);box-shadow:0 40px 100px rgba(0,0,0,.45)}
+.panel{scroll-margin-top:96px;position:relative;border:1px solid var(--line);border-radius:22px;background:linear-gradient(180deg,rgba(17,28,76,.72),rgba(7,12,36,.86));backdrop-filter:blur(10px);padding:clamp(22px,4vw,44px);box-shadow:0 40px 100px rgba(0,0,0,.45)}
 .panel::before,.panel::after{content:"";position:absolute;width:22px;height:22px;border:2px solid var(--teal);opacity:.9}
 .panel::before{left:-1px;top:-1px;border-right:0;border-bottom:0;border-radius:22px 0 0 0}
 .panel::after{right:-1px;bottom:-1px;border-left:0;border-top:0;border-radius:0 0 22px 0;border-color:var(--indigo)}
@@ -697,7 +698,7 @@ function nextQ() {
 async function finish() {
   Q.phase = 'result'; Q.save = 'saving';
   const score = Q.results.reduce((a, r) => a + r.points, 0), correct = Q.results.filter(r => r.correct).length, ms = Q.results.reduce((a, r) => a + r.elapsed_ms, 0);
-  Q.res = { handle: Q.handle, correct, score, ms }; renderQuiz();
+  Q.res = { handle: Q.handle, correct, score, ms }; renderQuiz(); window.scrollTo(0, 0);
   try {
     const j = await api('finish', { run_id: Q.runId });
     Q.res = { handle: Q.handle, correct: j.correct, score: j.score, ms: j.total_ms }; Q.save = 'saved';
@@ -859,7 +860,6 @@ function frame() {
   requestAnimationFrame(frame);
   if (document.body.dataset.view !== 'home') return;
   const y = window.scrollY; vel = lerp(vel, y - lastY, .15); lastY = y;
-  nav.classList.toggle('solid', y > 40);
   // hero parallax
   smx = lerp(smx, mx, .06); smy = lerp(smy, my, .06);
   if (!RM) { stack.style.transform = 'rotateX(' + (60 - smy * 12) + 'deg) rotateZ(' + (-38 + smx * 18) + 'deg)'; sun.style.transform = 'translate3d(' + (-smx * 20) + 'px,' + (y * .12 - smy * 12) + 'px,0)'; }
@@ -935,6 +935,21 @@ function boot() {
 }
 
 /* ====================== INIT ====================== */
+/* top bar: clear at the top of any page, frosted once you scroll, slides away on the way down and back on the way up */
+(function navBehaviour() {
+  const bar = $('#nav'); let last = window.scrollY, queued = false;
+  const update = () => {
+    const y = window.scrollY, dy = y - last;
+    bar.classList.toggle('solid', y > 40);
+    if (y < 80) bar.classList.remove('hide'); else if (dy > 6) bar.classList.add('hide'); else if (dy < -6) bar.classList.remove('hide');
+    last = y; queued = false;
+  };
+  addEventListener('scroll', () => { if (!queued) { queued = true; requestAnimationFrame(update); } }, { passive: true });
+  addEventListener('hashchange', () => { bar.classList.remove('hide'); last = window.scrollY; update(); });
+  addEventListener('pointermove', e => { if (e.clientY < 64) bar.classList.remove('hide'); });
+  bar.addEventListener('focusin', () => bar.classList.remove('hide'));
+  update();
+})();
 addEventListener('hashchange', route);
 document.body.dataset.view = 'home';
 renderBoards();
