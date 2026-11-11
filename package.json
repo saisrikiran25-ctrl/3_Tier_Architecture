@@ -1,0 +1,15 @@
+{
+  "name": "between-the-tiers",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Animated brief and quiz on three-tier architectures, with a Supabase-backed leaderboard.",
+  "engines": { "node": ">=18" },
+  "scripts": {
+    "test": "node tests/api-test.js",
+    "test:e2e": "node tests/e2e.js"
+  },
+  "devDependencies": {
+    "@electric-sql/pglite": "^0.5.16",
+    "playwright": "^1.48.0"
+  }
+}

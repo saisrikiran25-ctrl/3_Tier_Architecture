@@ -525,58 +525,49 @@ function h(tag, attrs, ...kids) {
   return e;
 }
 
-/* ====================== DATA LAYER (db + user) ====================== */
-const D = { db: null, uid: null, rows: [], state: 'loading', unsub: null, myName: '' };
-async function initData() {
-  try {
-    const c = window.claude;
-    if (!c || !c.use) { D.state = 'offline'; renderBoards(); return; }
-    const [db, user] = await Promise.all([c.use('db'), c.use('user')]);
-    if (user) { try { const m = await user.me(); D.uid = m.id; D.myName = m.name || ''; } catch (e) {} }
-    if (!db) { D.state = 'offline'; renderBoards(); return; }
-    D.db = db;
-    const timer = setTimeout(() => { if (D.state === 'loading') { D.state = 'slow'; renderBoards(); } }, 10000);
-    D.unsub = db.collection('scores').orderBy('best', 'desc').limit(100).onSnapshot(snap => {
-      clearTimeout(timer);
-      D.rows = snap.docs.map(d => ({ id: d.id, ...d.data() })).sort((a, b) => (b.best - a.best) || (a.ms - b.ms) || (a.updatedAt - b.updatedAt));
-      D.state = 'ready'; renderBoards(); updateRankLine();
-    }, err => { clearTimeout(timer); D.state = 'error'; renderBoards(); });
-  } catch (e) { D.state = 'offline'; renderBoards(); }
+/* ====================== DATA LAYER (talks to /api/quiz, which talks to Supabase) ====================== */
+const API = '/api/quiz';
+// A random device secret proves that a callsign is yours. Only its hash is ever stored on the server.
+const SECRET = (() => {
+  let s = ls.get('tc-secret');
+  if (!/^[a-f0-9]{64}$/.test(s || '')) { const a = new Uint8Array(32); crypto.getRandomValues(a); s = [...a].map(b => b.toString(16).padStart(2, '0')).join(''); ls.set('tc-secret', s); }
+  return s;
+})();
+async function api(action, body = {}) {
+  let r;
+  try { r = await fetch(API, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action, secret: SECRET, ...body }) }); }
+  catch (e) { throw { code: 'network' }; }
+  let j = null; try { j = await r.json(); } catch (e) { /* no body */ }
+  if (!r.ok) throw { code: (j && j.error) || 'server_error', status: r.status };
+  return j;
 }
-async function saveScore(res) {
-  if (!D.db) return 'offline';
-  if (!D.uid) return 'noid';
-  try {
-    const ref = D.db.doc('scores/' + D.uid);
-    const snap = await ref.get();
-    const prev = snap.exists ? snap.data() : null;
-    const better = !prev || res.score > prev.best || (res.score === prev.best && res.ms < prev.ms);
-    await ref.set({
-      handle: res.handle, best: better ? res.score : prev.best, correct: better ? res.correct : prev.correct,
-      ms: better ? res.ms : prev.ms, attempts: ((prev && prev.attempts) || 0) + 1, last: res.score, updatedAt: Date.now()
-    });
-    return better ? 'saved-best' : 'saved';
-  } catch (e) { return e && e.code === 'invalid_argument' ? 'denied' : 'error'; }
+const D = { rows: [], state: 'loading', timer: 0 };
+async function loadBoard() {
+  try { const j = await api('board', { limit: 100 }); D.rows = j.rows || []; D.state = 'ready'; }
+  catch (e) { D.state = (e.code === 'network' || e.status === 404 || e.status === 405) ? 'offline' : 'error'; }
+  renderBoards(); updateRankLine();
 }
-const myRank = () => { const i = D.rows.findIndex(r => r.id === D.uid); return i < 0 ? null : i + 1; };
+function pollBoard() {
+  loadBoard(); clearInterval(D.timer);
+  D.timer = setInterval(() => { if (!document.hidden && document.body.dataset.view !== 'quiz') loadBoard(); }, 10000);
+}
+const myRank = () => { const r = D.rows.find(x => x.is_me); return r ? r.place : null; };
 const fmtT = ms => { const s = Math.round(ms / 1000); return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0'); };
 
 function renderBoard(target, { limit = 100, compact = false } = {}) {
   target.textContent = '';
   if (D.state === 'loading') { target.append(h('div', { class: 'empty' }, h('b', {}, 'Syncing'), 'Reading the leaderboard…')); return; }
-  if (D.state === 'offline') { target.append(h('div', { class: 'empty' }, h('b', {}, 'Leaderboard offline'), 'Open this page signed in to claude.ai to see and join the leaderboard.')); return; }
-  if (D.state === 'error') { target.append(h('div', { class: 'empty' }, h('b', {}, 'Cannot reach the board'), 'Check your connection and reload.')); return; }
+  if (D.state === 'offline') { target.append(h('div', { class: 'empty' }, h('b', {}, 'Leaderboard offline'), 'Cannot reach the leaderboard. Check your connection and try again.')); return; }
+  if (D.state === 'error') { target.append(h('div', { class: 'empty' }, h('b', {}, 'Board unavailable'), 'The leaderboard did not answer. It will retry shortly.')); return; }
   if (!D.rows.length) { target.append(h('div', { class: 'empty' }, h('b', {}, 'No runs yet'), 'Be the first name on the board.')); return; }
-  if (!compact) target.append(h('div', { class: 'brow head' }, h('span', {}, '#'), h('span', {}, 'Player'), h('span', { style: 'text-align:right' }, 'Score'), h('span', { style: 'text-align:right' }, 'Right'), h('span', { class: 'tm', style: 'text-align:right' }, 'Time')));
-  else target.append(h('div', { class: 'brow head' }, h('span', {}, '#'), h('span', {}, 'Player'), h('span', { style: 'text-align:right' }, 'Score'), h('span', { style: 'text-align:right' }, 'Right'), h('span', { class: 'tm' })));
+  target.append(h('div', { class: 'brow head' }, h('span', {}, '#'), h('span', {}, 'Player'), h('span', { style: 'text-align:right' }, 'Score'), h('span', { style: 'text-align:right' }, 'Right'), compact ? h('span', { class: 'tm' }) : h('span', { class: 'tm', style: 'text-align:right' }, 'Time')));
   D.rows.slice(0, limit).forEach((r, i) => {
-    const me = r.id === D.uid;
-    target.append(h('div', { class: 'brow' + (me ? ' me' : '') + (i === 0 ? ' top1' : '') },
-      h('span', { class: 'rk' }, i + 1),
-      h('span', { class: 'nm' }, h('span', { style: 'overflow:hidden;text-overflow:ellipsis' }, String(r.handle || 'Player')), me ? h('span', { class: 'you' }, 'YOU') : null),
-      h('span', { class: 'sc' }, r.best),
+    target.append(h('div', { class: 'brow' + (r.is_me ? ' me' : '') + (r.place === 1 ? ' top1' : '') },
+      h('span', { class: 'rk' }, r.place),
+      h('span', { class: 'nm' }, h('span', { style: 'overflow:hidden;text-overflow:ellipsis' }, String(r.handle || 'Player')), r.is_me ? h('span', { class: 'you' }, 'YOU') : null),
+      h('span', { class: 'sc' }, r.best_score),
       h('span', { class: 'ct' }, r.correct + '/5'),
-      h('span', { class: 'tm' }, fmtT(r.ms))));
+      h('span', { class: 'tm' }, fmtT(r.total_ms))));
   });
 }
 function renderBoards() { renderBoard($('#miniboard'), { limit: 5, compact: true }); renderBoard($('#fullboard')); }
@@ -589,35 +580,29 @@ function route() {
   const was = document.body.dataset.view;
   document.body.dataset.view = view;
   if (view === 'quiz' && was !== 'quiz') { Q.phase = 'intro'; renderQuiz(); }
+  if (view === 'board' && was !== 'board') loadBoard();
   if (view !== 'home' && was !== view) window.scrollTo(0, 0);
   if (view === 'home' && SECTIONS.includes(hsh)) setTimeout(() => $('#' + hsh)?.scrollIntoView({ behavior: RM ? 'auto' : 'smooth' }), 30);
   else if (view === 'home' && (hsh === 'home' || (was && was !== 'home'))) window.scrollTo(0, 0);
 }
 
 /* ====================== QUIZ ====================== */
-const QUIZ = [
-  { tag: 'Tier rules', slide: 4, c: 'var(--teal)', q: 'A customer clicks Place Order in the browser. In a three-tier architecture, which tier may the browser talk to directly?',
-    o: ['The application tier only', 'The database tier only', 'Both the application tier and the database tier', 'Neither: the browser only talks to other browsers'], a: 0,
-    why: 'The client talks only to the application tier, and the database talks only to the application tier. A direct path from client to database must not exist.' },
-  { tag: 'Thin client', slide: 5, c: 'var(--teal)', q: 'Why is a web browser called a thin client?',
-    o: ['Its files are very small', 'It only presents information and sends input; the business rules and data stay on the server', 'It stores a full copy of the database locally', 'It works fully offline'], a: 1,
-    why: 'A thin client does presentation work only. The trade-off: it depends heavily on the network and the server, so with no connection it can do almost nothing.' },
-  { tag: 'Web languages', slide: 7, c: 'var(--amber)', q: 'A visitor chooses “view source” on the order-confirmation page. What can they see?',
-    o: ['The Java or PHP program that built the page', 'The SQL statements sent to the database', 'Only the HTML the server sent, never the server-side program that produced it', 'The code of the stored procedure'], a: 2,
-    why: 'Server-side code runs on the server and sends only its result to the browser. That is also a security benefit.' },
-  { tag: 'Stored procedures', slide: 11, c: 'var(--indigo)', q: 'Illustrative numbers: an order needs 5 SQL statements and each network round trip takes 2 ms. Roughly how much network time does one PlaceOrder stored-procedure call need instead?',
-    o: ['10 ms', '5 ms', '2 ms', '0 ms'], a: 2,
-    why: 'Five statements sent one by one cost about 5 × 2 = 10 ms. One procedure call is one trip: about 1 × 2 = 2 ms. The numbers are made up to show the principle, not measurements.' },
-  { tag: 'Transactions', slide: 9, c: 'var(--indigo)', q: 'The system crashes halfway through placing an order. Which ACID property makes sure the order and the stock update are saved together or not at all?',
-    o: ['Atomicity', 'Consistency', 'Isolation', 'Durability'], a: 0,
-    why: 'Atomicity means all steps happen or none do. Consistency keeps stock from going below zero, isolation stops two buyers taking the last phone, and durability keeps a saved order through a crash.' }
-];
+// The questions arrive from the server without their answers. Each pick is graded and timed by the database.
 const GRADES = [[5, 'System Architect'], [4, 'Senior Engineer'], [3, 'Tier Technician'], [2, 'Junior Operator'], [0, 'Client-side Tourist']];
 const MAXT = 30;
-const Q = { phase: 'intro', i: 0, order: [], picks: [], times: [], pts: [], t0: 0, handle: ls.get('tc-handle') || '', answered: false, res: null, save: null, raf: 0 };
+const Q = { phase: 'intro', i: 0, qs: [], order: [], runId: null, results: [], handle: ls.get('tc-handle') || '', answered: false, busy: false, res: null, save: null, raf: 0, ui: null };
 const shuffle = a => { const b = [...a]; for (let i = b.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [b[i], b[j]] = [b[j], b[i]]; } return b; };
 const panel = () => $('#qpanel');
 function cancelTimer() { cancelAnimationFrame(Q.raf); }
+const ERR = {
+  handle_taken: 'That callsign belongs to another player. Pick a different one.',
+  rate_limited: 'Too many runs in a short time. Wait a few minutes and try again.',
+  network: 'Cannot reach the quiz server. Check your connection and try again.',
+  invalid_input: 'Use 2 to 16 letters, numbers, spaces, _ - or .',
+  server_not_configured: 'The quiz server is not set up yet. Ask the site owner to finish the deployment.',
+  not_seeded: 'The quiz has no questions yet. Ask the site owner to run the seed script.'
+};
+const errText = e => ERR[e && e.code] || 'Something went wrong on the server. Please try again.';
 
 function renderQuiz() {
   cancelTimer();
@@ -627,59 +612,74 @@ function renderQuiz() {
   return renderResult(p);
 }
 function railEl() {
-  return h('div', { class: 'rail', 'aria-hidden': 'true' }, QUIZ.map((_, i) => h('i', { class: i < Q.i || (i === Q.i && Q.answered) ? 'done' : i === Q.i ? 'now' : '', style: '--c:' + ['var(--teal)', 'var(--teal)', 'var(--amber)', 'var(--indigo)', 'var(--indigo)'][i] })));
+  return h('div', { class: 'rail', 'aria-hidden': 'true' }, Q.qs.map((_, i) => h('i', { class: i < Q.i || (i === Q.i && Q.answered) ? 'done' : i === Q.i ? 'now' : '', style: '--c:' + ['var(--teal)', 'var(--teal)', 'var(--amber)', 'var(--indigo)', 'var(--indigo)'][i % 5] })));
 }
 function renderIntro(p) {
-  const input = h('input', { id: 'handle', type: 'text', maxlength: '16', autocomplete: 'nickname', spellcheck: 'false', placeholder: 'e.g. TIER_RUNNER', value: Q.handle || (D.myName ? D.myName.slice(0, 16) : '') });
+  const input = h('input', { id: 'handle', type: 'text', maxlength: '16', autocomplete: 'nickname', spellcheck: 'false', placeholder: 'e.g. TIER_RUNNER', value: Q.handle });
   const hint = h('p', { class: 'hint', id: 'hint' }, '2 to 16 characters: letters, numbers, space, _ - .');
-  const go = () => {
+  const btn = h('button', { class: 'btn primary', type: 'button' }, 'Start run →');
+  const go = async () => {
     const v = input.value.trim();
-    if (!/^[\w .\-]{2,16}$/.test(v)) { hint.className = 'hint err'; hint.textContent = 'Use 2 to 16 letters, numbers, spaces, _ - or .'; input.focus(); return; }
-    Q.handle = v; ls.set('tc-handle', v); startRun();
+    if (!/^[\w .\-]{2,16}$/.test(v) || /[^A-Za-z0-9 _.\-]/.test(v)) { hint.className = 'hint err'; hint.textContent = ERR.invalid_input; input.focus(); return; }
+    if (btn.disabled) return;
+    btn.disabled = true; btn.textContent = 'Connecting…'; hint.className = 'hint'; hint.textContent = 'Opening a run…';
+    try {
+      const j = await api('start', { handle: v });
+      Q.handle = v; ls.set('tc-handle', v);
+      Object.assign(Q, { phase: 'q', i: 0, qs: j.questions, order: j.questions.map(() => shuffle([0, 1, 2, 3])), runId: j.run_id, results: [], answered: false, busy: false, res: null, save: null });
+      renderQuiz();
+    } catch (e) { btn.disabled = false; btn.textContent = 'Start run →'; hint.className = 'hint err'; hint.textContent = errText(e); input.focus(); }
   };
   input.addEventListener('keydown', e => { if (e.key === 'Enter') go(); });
+  btn.addEventListener('click', go);
   p.append(
     h('div', { class: 'hd' }, h('p', { class: 'kick' }, 'Mission briefing'), h('a', { class: 'btn', href: '#leaderboard' }, 'Leaderboard')),
     h('h1', { class: 'h3' }, 'Five questions. One clean run.'),
     h('p', { style: 'color:var(--mute);margin:0' }, 'Everything comes from our presentation on three-tier architectures.'),
     h('ul', { class: 'rules' },
       h('li', {}, '100 points for each correct answer.'),
-      h('li', {}, 'Up to 50 bonus points for answering fast: the bonus drains over 30 seconds.'),
-      h('li', {}, 'Your best run is saved to the leaderboard under your callsign.')),
+      h('li', {}, 'Up to 50 bonus points for answering fast: the bonus drains over 30 seconds, timed by the server.'),
+      h('li', {}, 'Your best run is saved to the leaderboard under your callsign. Your browser keeps the key that proves the callsign is yours.')),
     h('div', { class: 'field' }, h('label', { for: 'handle' }, 'Your callsign'), input, hint),
-    h('div', { class: 'foot' }, h('span', { class: 'keys' }, 'Press Enter to launch'), h('button', { class: 'btn primary', on: { click: go } }, 'Start run →')));
+    h('div', { class: 'foot' }, h('span', { class: 'keys' }, 'Press Enter to launch'), btn));
   setTimeout(() => input.focus({ preventScroll: true }), 50);
 }
-function startRun() {
-  Object.assign(Q, { phase: 'q', i: 0, order: QUIZ.map(() => shuffle([0, 1, 2, 3])), picks: [], times: [], pts: [], answered: false, res: null, save: null });
-  Q.t0 = performance.now(); renderQuiz();
-}
 function renderQuestion(p) {
-  const qd = QUIZ[Q.i], ord = Q.order[Q.i];
-  Q.answered = false;
+  const qd = Q.qs[Q.i], ord = Q.order[Q.i];
+  Q.answered = false; Q.busy = false;
   const tFill = h('i'), tNum = h('b', {}, '+50');
-  const opts = ord.map((orig, k) => h('button', { class: 'opt', type: 'button', 'data-k': k, on: { click: () => answer(k) } }, h('b', {}, 'ABCD'[k]), h('span', {}, qd.o[orig])));
+  const opts = ord.map((orig, k) => h('button', { class: 'opt', type: 'button', 'data-k': k, on: { click: () => answer(k) } }, h('b', {}, 'ABCD'[k]), h('span', {}, qd.options[orig])));
   const why = h('div', { id: 'whywrap' });
   const foot = h('div', { class: 'foot' }, h('span', { class: 'keys' }, 'Keys: A B C D · Enter for next'), h('span'));
   p.append(
-    h('div', { class: 'hd' }, h('p', { class: 'kick' }, 'Q' + (Q.i + 1) + ' / 5 · ' + qd.tag), railEl()),
+    h('div', { class: 'hd' }, h('p', { class: 'kick' }, 'Q' + (Q.i + 1) + ' / ' + Q.qs.length + ' · ' + qd.tag), railEl()),
     h('div', { class: 'timer' }, h('span', {}, 'Speed bonus'), h('div', { class: 'tr' }, tFill), tNum),
-    h('h2', { class: 'q' }, qd.q), h('div', { class: 'opts', role: 'group', 'aria-label': 'Answers' }, opts), why, foot);
-  Q.t0 = performance.now();
-  const tick = () => { const e = (performance.now() - Q.t0) / 1000, f = clamp(1 - e / MAXT); tFill.style.transform = 'scaleX(' + f + ')'; tNum.textContent = '+' + Math.round(50 * f); if (!Q.answered) Q.raf = requestAnimationFrame(tick); };
+    h('h2', { class: 'q' }, qd.prompt), h('div', { class: 'opts', role: 'group', 'aria-label': 'Answers' }, opts), why, foot);
+  const t0 = performance.now();
+  const tick = () => { const e = (performance.now() - t0) / 1000, f = clamp(1 - e / MAXT); tFill.style.transform = 'scaleX(' + f + ')'; tNum.textContent = '+' + Math.round(50 * f); if (!Q.answered) Q.raf = requestAnimationFrame(tick); };
   tick();
   Q.ui = { opts, why, foot, tNum };
 }
-function answer(k) {
-  if (Q.answered) return;
-  Q.answered = true; cancelTimer();
-  const qd = QUIZ[Q.i], orig = Q.order[Q.i][k], el = (performance.now() - Q.t0) / 1000, ok = orig === qd.a;
-  const bonus = ok ? Math.round(50 * clamp(1 - el / MAXT)) : 0;
-  Q.picks[Q.i] = orig; Q.times[Q.i] = el * 1000; Q.pts[Q.i] = ok ? 100 + bonus : 0;
-  Q.ui.opts.forEach((b, i) => { b.setAttribute('aria-disabled', 'true'); const isC = Q.order[Q.i][i] === qd.a; if (isC) b.classList.add('ok'); else if (i === k) b.classList.add('bad'); else b.classList.add('dim'); });
+async function answer(k) {
+  if (Q.answered || Q.busy) return;
+  Q.busy = true; cancelTimer();
+  const qd = Q.qs[Q.i], orig = Q.order[Q.i][k];
+  Q.ui.opts.forEach((b, i) => { b.setAttribute('aria-disabled', 'true'); if (i === k) b.style.borderColor = 'var(--teal)'; });
+  Q.ui.why.textContent = ''; Q.ui.why.append(h('p', { class: 'hint' }, 'Checking your answer…'));
+  let r;
+  try { r = await api('answer', { run_id: Q.runId, question: qd.id, choice: orig }); }
+  catch (e) {
+    Q.busy = false; Q.ui.opts.forEach(b => { b.removeAttribute('aria-disabled'); b.style.borderColor = ''; });
+    Q.ui.why.textContent = ''; Q.ui.why.append(h('p', { class: 'hint err' }, e.code === 'already_answered' || e.code === 'out_of_order' || e.code === 'forbidden' || e.code === 'already_finished' ? 'This run can no longer continue. Start a new run from the quiz page.' : errText(e) + ' Pick an answer again.'));
+    return;
+  }
+  Q.answered = true; Q.busy = false; Q.results[Q.i] = { ...r, tag: qd.tag };
+  const ok = r.correct;
+  Q.ui.opts.forEach((b, i) => { b.style.borderColor = ''; const isC = Q.order[Q.i][i] === r.correct_idx; if (isC) b.classList.add('ok'); else if (i === k) b.classList.add('bad'); else b.classList.add('dim'); });
+  Q.ui.why.textContent = '';
   Q.ui.why.append(h('div', { class: 'why', style: '--c:' + (ok ? 'var(--ok)' : 'var(--bad)') },
-    h('div', { class: 'verdict ' + (ok ? 'ok' : 'bad') }, ok ? 'Correct · +' + Q.pts[Q.i] + ' pts' : 'Not quite · 0 pts'), h('p', {}, qd.why), h('small', {}, 'See slide ' + qd.slide)));
-  const last = Q.i === QUIZ.length - 1;
+    h('div', { class: 'verdict ' + (ok ? 'ok' : 'bad') }, ok ? 'Correct · +' + r.points + ' pts' : 'Not quite · 0 pts'), h('p', {}, r.explanation), h('small', {}, 'See slide ' + r.slide)));
+  const last = Q.i === Q.qs.length - 1;
   const next = h('button', { class: 'btn primary', id: 'next', on: { click: nextQ } }, last ? 'See results →' : 'Next question →');
   Q.ui.foot.lastChild.replaceWith(next);
   $('.rail', panel())?.replaceWith(railEl());
@@ -687,25 +687,29 @@ function answer(k) {
 }
 function nextQ() {
   if (!Q.answered) return;
-  if (Q.i < QUIZ.length - 1) { Q.i++; Q.answered = false; renderQuiz(); panel().scrollIntoView({ block: 'start' }); }
+  if (Q.i < Q.qs.length - 1) { Q.i++; Q.answered = false; renderQuiz(); panel().scrollIntoView({ block: 'start' }); }
   else finish();
 }
 async function finish() {
-  const correct = Q.picks.filter((p, i) => p === QUIZ[i].a).length, score = Q.pts.reduce((a, b) => a + b, 0), ms = Math.round(Q.times.reduce((a, b) => a + b, 0));
-  Q.res = { handle: Q.handle, correct, score, ms }; Q.phase = 'result'; Q.save = 'saving'; renderQuiz();
-  Q.save = await saveScore(Q.res);
+  Q.phase = 'result'; Q.save = 'saving';
+  const score = Q.results.reduce((a, r) => a + r.points, 0), correct = Q.results.filter(r => r.correct).length, ms = Q.results.reduce((a, r) => a + r.elapsed_ms, 0);
+  Q.res = { handle: Q.handle, correct, score, ms }; renderQuiz();
+  try {
+    const j = await api('finish', { run_id: Q.runId });
+    Q.res = { handle: Q.handle, correct: j.correct, score: j.score, ms: j.total_ms }; Q.save = 'saved';
+    if (Q.phase === 'result') renderQuiz();
+    loadBoard();
+  } catch (e) { Q.save = 'error'; }
   if (Q.phase === 'result') updateSaveLine();
 }
 function updateSaveLine() {
   const n = $('#saveline'); if (!n) return;
-  const m = { saving: ['Saving to the leaderboard…', ''], 'saved-best': ['New personal best saved to the leaderboard.', 'good'], saved: ['Run saved. Your earlier best score stays on the board.', 'good'],
-    offline: ['Leaderboard unavailable here. Open the page signed in to claude.ai to save scores.', 'warn'], noid: ['You are not signed in, so this run was not saved.', 'warn'],
-    denied: ['Saving was refused. Scores can only be saved by people with Contributor access to this page. Ask the owner to share it at that level.', 'warn'], error: ['Could not save the score. Try again from the leaderboard.', 'warn'] }[Q.save] || ['', ''];
+  const m = { saving: ['Saving to the leaderboard…', ''], saved: ['Run saved. Your best run stays on the leaderboard.', 'good'], error: ['Could not save this run. Check your connection; the result above was not recorded.', 'warn'] }[Q.save] || ['', ''];
   n.className = 'save ' + m[1]; n.textContent = ''; n.append(h('span', {}, m[0]), h('span', { id: 'rankline' })); updateRankLine();
 }
 function updateRankLine() {
   const n = $('#rankline'); if (!n) return; const r = myRank();
-  n.textContent = r && Q.save && Q.save.startsWith('saved') ? ' · Current rank #' + r + ' of ' + D.rows.length : '';
+  n.textContent = r && Q.save === 'saved' ? ' · Current rank #' + r + ' of ' + D.rows.length : '';
 }
 function renderResult(p) {
   const { correct, score, ms } = Q.res, grade = GRADES.find(g => correct >= g[0])[1];
@@ -714,13 +718,15 @@ function renderResult(p) {
     h('div', { class: 'hd' }, h('p', { class: 'kick' }, 'Run complete'), h('a', { class: 'btn', href: '#leaderboard' }, 'Leaderboard')),
     h('div', { class: 'mono', style: 'color:var(--mute);font-size:12px' }, Q.handle), sc,
     h('p', { class: 'grade' }, grade),
-    h('div', { class: 'meta' }, h('span', {}, 'Correct ', h('b', {}, correct + ' / 5')), h('span', {}, 'Time ', h('b', {}, fmtT(ms))), h('span', {}, 'Max score ', h('b', {}, '750'))),
-    h('ul', { class: 'review' }, QUIZ.map((qd, i) => { const ok = Q.picks[i] === qd.a; return h('li', {}, h('span', { class: 'ic ' + (ok ? 'ok' : 'bad') }, ok ? '✓' : '✕'), h('div', {}, h('div', { style: 'font-weight:700' }, qd.tag), h('small', {}, 'Slide ' + qd.slide)), h('span', { class: 'mono', style: 'font-size:12px;color:var(--mute)' }, '+' + Q.pts[i])); })),
+    h('div', { class: 'meta' }, h('span', {}, 'Correct ', h('b', {}, correct + ' / ' + Q.qs.length)), h('span', {}, 'Time ', h('b', {}, fmtT(ms))), h('span', {}, 'Max score ', h('b', {}, String(Q.qs.length * 150)))),
+    h('ul', { class: 'review' }, Q.results.map(r => h('li', {}, h('span', { class: 'ic ' + (r.correct ? 'ok' : 'bad') }, r.correct ? '✓' : '✕'), h('div', {}, h('div', { style: 'font-weight:700' }, r.tag), h('small', {}, 'Slide ' + r.slide)), h('span', { class: 'mono', style: 'font-size:12px;color:var(--mute)' }, '+' + r.points)))),
     h('div', { class: 'save', id: 'saveline' }),
     h('div', { class: 'foot' }, h('a', { class: 'btn', href: '#home' }, '← Back to the brief'), h('div', { style: 'display:flex;gap:10px;flex-wrap:wrap' }, h('a', { class: 'btn', href: '#leaderboard' }, 'View leaderboard'), h('button', { class: 'btn primary', on: { click: () => { Q.phase = 'intro'; renderQuiz(); } } }, 'Run again'))));
   updateSaveLine();
-  const t0 = performance.now(), dur = RM ? 1 : 1100;
-  (function up(t) { const f = clamp((t - t0) / dur); sc.textContent = Math.round(score * (1 - Math.pow(1 - f, 3))); if (f < 1) requestAnimationFrame(up); })(t0);
+  if (Q.save === 'saving') {
+    const t0 = performance.now(), dur = RM ? 1 : 1100;
+    (function up(t) { const f = clamp((t - t0) / dur); sc.textContent = Math.round(score * (1 - Math.pow(1 - f, 3))); if (f < 1) requestAnimationFrame(up); })(t0);
+  } else sc.textContent = score;
 }
 addEventListener('keydown', e => {
   if (document.body.dataset.view !== 'quiz' || Q.phase !== 'q' || e.ctrlKey || e.metaKey || e.altKey) return;
@@ -934,7 +940,7 @@ measureMarq(); fitTitle(); addEventListener('resize', () => { measureMarq(); fit
 if (document.fonts && document.fonts.ready) document.fonts.ready.then(() => { measureMarq(); fitTitle(); });
 requestAnimationFrame(frame);
 boot();
-initData();
+pollBoard();
 })();
 </script>
 </body>
