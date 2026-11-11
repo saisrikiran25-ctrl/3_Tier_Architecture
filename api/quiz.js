@@ -22,7 +22,8 @@ const STATUS = {
 const sha = s => crypto.createHash('sha256').update(s).digest('hex');
 
 async function rpc(fn, args) {
-  const base = process.env.SUPABASE_URL.replace(/\/+$/, ''), key = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  // Accept the bare project URL, or the longer "…/rest/v1" address that Supabase's Data API page shows.
+  const base = process.env.SUPABASE_URL.trim().replace(/\/+$/, '').replace(/\/rest\/v1$/i, ''), key = process.env.SUPABASE_SERVICE_ROLE_KEY.trim();
   // New-style secret keys (sb_secret_...) are not JWTs and go in the apikey header only.
   // Legacy service_role keys are JWTs (they start with "eyJ") and also go in the Authorization header.
   const headers = { apikey: key, 'Content-Type': 'application/json' };
