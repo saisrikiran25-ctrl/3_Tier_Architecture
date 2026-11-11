@@ -6,7 +6,8 @@
  *
  * Environment variables (set them in Vercel, see README):
  *   SUPABASE_URL                e.g. https://abcdxyz.supabase.co
- *   SUPABASE_SERVICE_ROLE_KEY   the service_role key (server only, never expose it in the page)
+ *   SUPABASE_SERVICE_ROLE_KEY   the Secret key (sb_secret_...) or the legacy service_role key; server only,
+ *                               never expose it in the page
  *   HASH_PEPPER                 a long random string; used when hashing secrets and addresses
  */
 const crypto = require('crypto');
@@ -22,11 +23,11 @@ const sha = s => crypto.createHash('sha256').update(s).digest('hex');
 
 async function rpc(fn, args) {
   const base = process.env.SUPABASE_URL.replace(/\/+$/, ''), key = process.env.SUPABASE_SERVICE_ROLE_KEY;
-  const r = await fetch(`${base}/rest/v1/rpc/${fn}`, {
-    method: 'POST',
-    headers: { apikey: key, Authorization: 'Bearer ' + key, 'Content-Type': 'application/json' },
-    body: JSON.stringify(args)
-  });
+  // New-style secret keys (sb_secret_...) are not JWTs and go in the apikey header only.
+  // Legacy service_role keys are JWTs (they start with "eyJ") and also go in the Authorization header.
+  const headers = { apikey: key, 'Content-Type': 'application/json' };
+  if (key.startsWith('eyJ')) headers.Authorization = 'Bearer ' + key;
+  const r = await fetch(`${base}/rest/v1/rpc/${fn}`, { method: 'POST', headers, body: JSON.stringify(args) });
   const text = await r.text();
   let json = null;
   try { json = JSON.parse(text); } catch (e) { /* not JSON */ }

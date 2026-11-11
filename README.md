@@ -49,11 +49,14 @@ leaderboard(player_id -> players, best_score, correct, total_ms, attempts, updat
 ## Deploy (about 10 minutes)
 
 1. **Supabase.** Create a project at supabase.com. Open **SQL Editor**, run `supabase/schema.sql`, then run
-   `supabase/seed.sql`. In **Project Settings > API** copy the **Project URL** and the **service_role** key.
+   `supabase/seed.sql`. Copy two values: the **Project URL** (**Project Settings > Data API**, it looks like
+   `https://abcdxyz.supabase.co`) and the **Secret key** (**Project Settings > API Keys > Secret keys**, the one starting
+   `sb_secret_`; click the eye icon to reveal it). The publishable key is not used by this app.
 2. **Vercel.** Import this GitHub repository. Framework preset **Other**, no build command, no output directory.
    Add three environment variables (see `.env.example`):
    - `SUPABASE_URL`: the Project URL
-   - `SUPABASE_SERVICE_ROLE_KEY`: the service_role key (secret: only ever put it in Vercel, never in the repo or the page)
+   - `SUPABASE_SERVICE_ROLE_KEY`: the Secret key (secret: only ever put it in Vercel, never in the repo or the page).
+     Despite the variable's name, the new `sb_secret_...` key and a legacy `service_role` key both work.
    - `HASH_PEPPER`: a long random string, for example the output of `openssl rand -hex 32`
 3. **Deploy**, open the site and play one run. Your callsign should appear on the leaderboard.
 
