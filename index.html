@@ -538,7 +538,11 @@ async function api(action, body = {}) {
   try { r = await fetch(API, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action, secret: SECRET, ...body }) }); }
   catch (e) { throw { code: 'network' }; }
   let j = null; try { j = await r.json(); } catch (e) { /* no body */ }
-  if (!r.ok) throw { code: (j && j.error) || 'server_error', status: r.status };
+  if (!r.ok) {
+    // one automatic retry for a hiccup on the server side, only for calls that are safe to repeat
+    if (r.status >= 500 && !body._retried && (action === 'start' || action === 'board')) { await new Promise(z => setTimeout(z, 700)); return api(action, { ...body, _retried: true }); }
+    throw { code: (j && j.error) || 'server_error', status: r.status, upstream: j && j.upstream_code };
+  }
   return j;
 }
 const D = { rows: [], state: 'loading', timer: 0 };
@@ -602,7 +606,7 @@ const ERR = {
   server_not_configured: 'The quiz server is not set up yet. Ask the site owner to finish the deployment.',
   not_seeded: 'The quiz has no questions yet. Ask the site owner to run the seed script.'
 };
-const errText = e => ERR[e && e.code] || 'Something went wrong on the server. Please try again.';
+const errText = e => ERR[e && e.code] || 'Something went wrong on the server. Please try again. (' + [e && e.code, e && e.status, e && e.upstream].filter(Boolean).join(' · ') + ')';
 
 function renderQuiz() {
   cancelTimer();
